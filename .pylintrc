@@ -1,0 +1,5 @@
+[MASTER]
+# Keep defaults; only pin project-specific lint behavior here.
+
+[FORMAT]
+max-line-length=200

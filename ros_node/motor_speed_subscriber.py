@@ -11,8 +11,8 @@ from exr2_interfaces.msg import TrackKinematics
 
 TOPIC_TRACK_KINEMATICS = "/exr_200/serial_hardware_interface/track_kinematics"
 TOPIC_SET_SPEED_REF = "/exr_200/serial_hardware_interface/msgs/out/set_speed_ref"
-TOPIC_MOTOR_SPEED_TORQUE_LEFT = "/exr_200/serial_hardware_interface/msgs/out/motor_speed_torque/left"
-TOPIC_MOTOR_SPEED_TORQUE_RIGHT = "/exr_200/serial_hardware_interface/msgs/out/motor_speed_torque/right"
+TOPIC_MOTOR_SPEED_TORQUE_LEFT = "/exr_200/serial_hardware_interface/msgs/in/motor_speed_torque/left"
+TOPIC_MOTOR_SPEED_TORQUE_RIGHT = "/exr_200/serial_hardware_interface/msgs/in/motor_speed_torque/right"
 
 SERIAL_PORT = "/dev/ttyUSB0"
 SERIAL_BAUDRATE = 115200
@@ -31,7 +31,9 @@ class MotorSpeedChecker(Node):
         self.gearbox_ratio = float(self.get_parameter("gearbox_ratio").value)
 
         self.track_kinematics_left_motor_rad_s = 0.0
+        self.track_kinematics_left_axis_rad_s = 0.0
         self.set_speed_ref_left_motor_rad_s = 0.0
+        self.motor_speed_torque_left_motor_rad_s = 0.0
         self.arduino_left_axis_rad_s = 0.0
         self.arduino_left_motor_rad_s = 0.0
 
@@ -42,7 +44,7 @@ class MotorSpeedChecker(Node):
 
         self.create_subscription(TrackKinematics, TOPIC_TRACK_KINEMATICS, self.track_kinematics_callback, SensorDataQos)
         self.create_subscription(SetSpeedref, TOPIC_SET_SPEED_REF, self.set_speed_ref_callback, SensorDataQos)
-        self.create_subscription(MotorSpeedTorque, TOPIC_MOTOR_SPEED_TORQUE_LEFT, self.noop_callback, SensorDataQos)
+        self.create_subscription(MotorSpeedTorque, TOPIC_MOTOR_SPEED_TORQUE_LEFT, self.motor_speed_torque_left_callback, SensorDataQos)
         self.create_subscription(MotorSpeedTorque, TOPIC_MOTOR_SPEED_TORQUE_RIGHT, self.noop_callback, SensorDataQos)
         self.ser = None
 
@@ -61,12 +63,17 @@ class MotorSpeedChecker(Node):
     def track_kinematics_callback(self, msg: TrackKinematics) -> None:
         # TrackKinematics motor rotational speed (motor side, not axis side).
         self.track_kinematics_left_motor_rad_s = float(getattr(msg, "motor_rotational_speed_l", 0.0))
+        self.track_kinematics_left_axis_rad_s = float(getattr(msg, "track_axis_rotational_speed_l", 0.0))
+        self.diff_drive_left_axis_rad_s_raw = self.track_kinematics_left_axis_rad_s
 
     def set_speed_ref_callback(self, msg: SetSpeedref) -> None:
         # SetSpeedRef left speed is in kRPM; convert to rad/s.
         # Field name may differ across interface versions, so try common variants.
-        left_krpm = self._get_first_attr(msg, ("speed_ref_l", "motor_speed_ref_l", "left_speed_ref", "left"), 0.0,)
+        left_krpm = self._get_first_attr(msg, ("speed_l", "speed_ref_l", "motor_speed_ref_l", "left_speed_ref", "left"), 0.0,)
         self.set_speed_ref_left_motor_rad_s = self.krpm_to_rad_s(left_krpm)
+
+    def motor_speed_torque_left_callback(self, msg: MotorSpeedTorque) -> None:
+        self.motor_speed_torque_left_motor_rad_s = self.krpm_to_rad_s(self._get_first_attr(msg, ("speed", "speed_l", "left_speed"), 0.0))
 
     def serial_callback(self, line: str) -> None:
         tokens = line.split(",")
@@ -99,11 +106,12 @@ class MotorSpeedChecker(Node):
         self.diff_drive_left_motor_rad_s = (self.diff_drive_left_axis_rad_s_raw * self.gearbox_ratio)
 
         self.get_logger().info(
-            f"dd_axis {self.diff_drive_left_axis_rad_s_raw} "
+            f"dd[axis] {self.diff_drive_left_axis_rad_s_raw:.2f} "
             # f"dd_motor {self.diff_drive_left_motor_rad_s} "
-            f"setref_motor {self.set_speed_ref_left_motor_rad_s} "
-            f"track_motor {self.track_kinematics_left_motor_rad_s} "
-            f"arduino_motor {self.arduino_left_motor_rad_s}"
+            f"setpoint[motor] {self.set_speed_ref_left_motor_rad_s:.2f} "
+            f"msg[motor] {self.track_kinematics_left_motor_rad_s:.2f} "
+            # f"mst_motor {self.motor_speed_torque_left_motor_rad_s:.2f} "
+            f"measured[motor] {self.arduino_left_motor_rad_s:.2f}"
         )
 
     def destroy_node(self) -> bool:
